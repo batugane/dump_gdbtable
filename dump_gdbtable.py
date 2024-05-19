@@ -32,6 +32,7 @@
 # WARNING: proof-of-concept code of the https://github.com/rouault/dump_gdbtable/wiki/FGDB-Spec
 # not production ready, not all cases handled, etc...
 
+import os
 import uuid
 import struct
 import sys
@@ -97,6 +98,10 @@ def read_float64(f):
 def read_uint32(f):
     v = f.read(4)
     return struct.unpack('I', v)[0]
+
+def read_uint64(f):
+    v = f.read(8)
+    return struct.unpack('Q', v)[0]
 
 def read_uint40(f):
     v_low = read_uint8(f)
@@ -226,72 +231,131 @@ def read_tab_m(f, nb_geoms, tab_nb_points):
 
 filenamex = filename[0:-1] + 'x'
 fx = open(filenamex, 'rb')
-fx.seek(4, 0)
+
+tablx_version = read_uint32(fx)
+print('tablx_version = %d' % tablx_version)
+assert tablx_version in (3, 4)
+
 n1024Blocks = read_uint32(fx)
 print('n1024Blocks = %d' % n1024Blocks)
-nfeaturesx = read_uint32(fx)
-print('nfeaturesx = %d' % nfeaturesx)
-if n1024Blocks == 0:
-    assert nfeaturesx == 0
-else:
-    assert nfeaturesx >= 0
-size_tablx_offsets = read_uint32(fx)
-print('size_tablx_offsets = %d' % size_tablx_offsets)
-assert size_tablx_offsets >= 4 and size_tablx_offsets <= 6
 
-def TEST_BIT(ar, bit):
-    return 1 if (ar[(bit) // 8] & (1 << ((bit) % 8))) else 0
-
-def BIT_ARRAY_SIZE_IN_BYTES(bitsize):
-    return (((bitsize)+7)//8)
-
-pabyTablXBlockMap = None
-if n1024Blocks != 0:
-    fx.seek(size_tablx_offsets * 1024 * n1024Blocks + 16, 0)
-    nBitmapInt32Words = read_uint32(fx)
-    print('nBitmapInt32Words = %d' % nBitmapInt32Words)
-    nBitsForBlockMap = read_uint32(fx)
-    print('nBitsForBlockMap = %d' % nBitsForBlockMap)
-    n1024BlocksBis = read_uint32(fx)
-    print('n1024BlocksBis = %d' % n1024BlocksBis)
-    assert n1024Blocks == n1024BlocksBis
-    nLeadingNonZero32BitWords = read_uint32(fx)
-    print('nLeadingNonZero32BitWords = %d' % nLeadingNonZero32BitWords)
-    if nBitmapInt32Words == 0:
-        assert nBitsForBlockMap == n1024Blocks
+if tablx_version == 3:
+    nfeaturesx = read_uint32(fx)
+    print('nfeaturesx = %d' % nfeaturesx)
+    if n1024Blocks == 0:
+        assert nfeaturesx == 0
     else:
-        assert nfeaturesx <= nBitsForBlockMap * 1024
-        #Allocate a bit mask array for blocks of 1024 features.
-        nSizeInBytes = BIT_ARRAY_SIZE_IN_BYTES(nBitsForBlockMap)
-        pabyTablXBlockMap = fx.read(nSizeInBytes)
-        pabyTablXBlockMap = struct.unpack('B' * nSizeInBytes, pabyTablXBlockMap)
-        nCountBlocks = 0
-        for i in range(nBitsForBlockMap):
-            nCountBlocks += TEST_BIT(pabyTablXBlockMap, i)
-        assert nCountBlocks == n1024Blocks, (nCountBlocks, n1024Blocks)
+        assert nfeaturesx >= 0
+    size_tablx_offsets = read_uint32(fx)
+    print('size_tablx_offsets = %d' % size_tablx_offsets)
+    assert size_tablx_offsets >= 4 and size_tablx_offsets <= 6
+
+    def TEST_BIT(ar, bit):
+        return 1 if (ar[(bit) // 8] & (1 << ((bit) % 8))) else 0
+
+    def BIT_ARRAY_SIZE_IN_BYTES(bitsize):
+        return (((bitsize)+7)//8)
+
+    pabyTablXBlockMap = None
+    if n1024Blocks != 0:
+        fx.seek(size_tablx_offsets * 1024 * n1024Blocks + 16, 0)
+        nBitmapInt32Words = read_uint32(fx)
+        print('nBitmapInt32Words = %d' % nBitmapInt32Words)
+        nBitsForBlockMap = read_uint32(fx)
+        print('nBitsForBlockMap = %d' % nBitsForBlockMap)
+        n1024BlocksBis = read_uint32(fx)
+        print('n1024BlocksBis = %d' % n1024BlocksBis)
+        assert n1024Blocks == n1024BlocksBis
+        nLeadingNonZero32BitWords = read_uint32(fx)
+        print('nLeadingNonZero32BitWords = %d' % nLeadingNonZero32BitWords)
+        if nBitmapInt32Words == 0:
+            assert nBitsForBlockMap == n1024Blocks
+        else:
+            assert nfeaturesx <= nBitsForBlockMap * 1024
+            #Allocate a bit mask array for blocks of 1024 features.
+            nSizeInBytes = BIT_ARRAY_SIZE_IN_BYTES(nBitsForBlockMap)
+            pabyTablXBlockMap = fx.read(nSizeInBytes)
+            pabyTablXBlockMap = struct.unpack('B' * nSizeInBytes, pabyTablXBlockMap)
+            nCountBlocks = 0
+            for i in range(nBitsForBlockMap):
+                nCountBlocks += TEST_BIT(pabyTablXBlockMap, i)
+            assert nCountBlocks == n1024Blocks, (nCountBlocks, n1024Blocks)
+elif tablx_version == 4:
+    unknown_field = read_uint32(fx)
+    assert unknown_field == 0  # seems to be always 0. Perhaps n1024Blocks is a uint64?
+    size_tablx_offsets = read_uint32(fx)
+    print('size_tablx_offsets = %d' % size_tablx_offsets)
+    assert size_tablx_offsets >= 4 and size_tablx_offsets <= 6
+
+    pabyTablXBlockMap = None
+    if n1024Blocks != 0:
+        fx.seek(size_tablx_offsets * 1024 * n1024Blocks + 16, 0)
+        nfeaturesx = read_uint64(fx)
+        print('nfeaturesx = %d' % nfeaturesx)
+
+        # In bytes. 0 for compact/non-sparse files
+        sizeof_varying_section = read_uint32(fx)
+        print('sizeof_varying_section = %d' % sizeof_varying_section)
+        if sizeof_varying_section != 0:
+            # TODO: try to understand the payload
+            # Cf with_holes files at https://github.com/qgis/QGIS/issues/57471
+            print("WARNING: file with sparse OBJECTID. Not handled!")
 
 f = open(filename, 'rb')
-f.seek(4, 0)
-nfeatures = read_uint32(f)
-print('nfeatures = %d' % nfeatures)
 
-# max(largest size of all record, header_length)
-largest_size_record = read_uint32(f)
-print('largest_size_record = %d' % largest_size_record)
+table_version = read_uint32(f)
+print('table_version = %d' % table_version)
+assert table_version in (3, 4)
 
+assert table_version == tablx_version
 
-f.seek(32, 0)
-header_offset_low = read_uint32(f)
-header_offset_high = read_uint32(f)
-header_offset = header_offset_low | (header_offset_high << 32)
-print('header_offset = %d' % header_offset)
+if table_version == 3:
+    nfeatures = read_uint32(f)
+    print('nfeatures = %d' % nfeatures)
 
-f.seek(header_offset, 0)
-header_length = read_uint32(f)
-print('header_length = %d' % header_length)
+    # max(largest size of all record, header_length)
+    largest_size_record = read_uint32(f)
+    print('largest_size_record = %d' % largest_size_record)
 
-header_version = read_uint32(f)
-print('header_version = %d' % header_version)
+    unknown_role = read_uint32(f)
+    assert unknown_role == 5
+
+    unknown_role = read_uint32(f)
+    unknown_role = read_uint32(f)
+
+elif table_version == 4:
+    has_deleted_features = read_uint32(f)
+    print('has_deleted_features = %d' % has_deleted_features)
+
+    # max(largest size of all record, header_length)
+    largest_size_record = read_uint32(f)
+    print('largest_size_record = %d' % largest_size_record)
+
+    unknown_role = read_uint32(f)
+    assert unknown_role == 5
+
+    nfeatures = read_uint64(f)
+    print('nfeatures = %d' % nfeatures)
+
+file_size = read_uint64(f)
+print('file_size = %d' % file_size)
+assert os.stat(filename).st_size == file_size
+
+field_description_section_offset = read_uint64(f)
+print('field_description_section_offset = %d' % field_description_section_offset)
+
+f.seek(field_description_section_offset, os.SEEK_SET)
+field_description_section_length = read_uint32(f)
+print('field_description_section_length = %d' % field_description_section_length)
+
+field_description_section_version = read_uint32(f)
+print('field_description_section_version = %d' % field_description_section_version)
+if table_version == 4:
+    assert field_description_section_version in (6,)
+assert field_description_section_version in (3,  # FileGDB 9x
+                                             4,  # FileGDB 10, pre ArcGIS Pro 3.2
+                                             6,  # FileGDB 10, post ArcGIS Pro 3.2
+                                             )
 
 layer_geom_type_full = read_uint32(f)
 layer_geom_type = layer_geom_type_full & 0xff
@@ -479,8 +543,15 @@ for i in range(nfields):
     print('type = %d (%s)' % (type, field_type_to_str(type)))
     # objectid
     if type == TYPE_OBJECTID:
-        print('magic1 = %d' % read_uint8(f))
-        print('magic2 = %d' % read_uint8(f))
+        width = read_uint8(f)
+        print('width = %d' % width)
+        if table_version == 3:
+            assert width == 4 #  32-bit object ids
+        elif table_version == 3:
+            assert width == 8 #  64-bit object ids
+        flag = read_uint8(f)
+        print('flag = %d' % flag)
+        assert flag == 2  #  Probably meaning it is implicit
         fd.nullable = False
 
     # shape
@@ -692,7 +763,11 @@ nCountBlocksBeforeIBlockValue = 0
 import os
 display_as_c_struct = 'DISPLAY_AS_C_STRUCT' in os.environ
 
-for fid in range(nfeaturesx):
+fid_loop_count = nfeaturesx
+if tablx_version == 4 and sizeof_varying_section != 0:
+    fid_loop_count = 1024 * n1024Blocks
+
+for fid in range(fid_loop_count):
 
     if pabyTablXBlockMap:
         iBlock = fid // 1024
@@ -728,7 +803,10 @@ for fid in range(nfeaturesx):
 
     if not display_as_c_struct:
         print('')
-        print('FID = %d' % (fid + 1))
+        if fid_loop_count != nfeaturesx:
+            print('pseudo FID = %d' % (fid + 1))
+        else:
+            print('FID = %d' % (fid + 1))
         print('feature_offset = %d' % feature_offset)
 
     f.seek(feature_offset, 0)
