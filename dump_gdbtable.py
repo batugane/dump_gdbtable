@@ -144,12 +144,7 @@ def read_varuint(f):
     return ret
 
 def read_utf16(f, nbcar):
-    # FIXME : only works with ASCII currently
-    val = ''
-    for j in range(nbcar):
-        val = val + '%c' % read_uint8(f)
-        f.read(1)
-    return val
+    return f.read(nbcar * 2).decode("utf-16le")
 
 def read_bbox(f):
     vi = read_varuint(f)
